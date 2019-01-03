@@ -327,3 +327,232 @@ main();
 ```
 
 ## Koa.js 基礎知識
+
+- 非常小巧的 Node.js 服務器
+- 實現中間件模式，可任意擴展
+- 僅自帶中間件與請求響應的一些幫助方法
+
+### Koa.js 中間件核心代碼
+
+來自 koajs/compose
+
+```javascript
+function compose(middleware) {
+  return function(context, next) {
+    // last called middleware #
+    let index = -1
+    return dispatch(0)
+    function dispatch(i) {
+      if (i <= index) return Promise.reject(new Error('next() called multiple times'))
+      index = i
+      let fn = middleware[i]
+      if (i === middleware.length) fn = next
+      if (!fn) return Promise.resolve()
+      try {
+        return Promise.resolve(fn(context, function next() {
+          return dispatch(i + 1)
+        }))
+      } catch(err) {
+        return Promise.reject(err)
+      }
+    }
+  }
+}
+```
+
+然後我們來測試一下：
+
+```javascript
+async function a(ctx, next) {
+  console.log(1);
+  const hello = await Promise.resolve('hello node.js');
+  console.log(hello);
+  await next();
+  console.log('a end');
+}
+async function b(ctx, next) {
+  console.log(2);
+  const hello = await Promise.resolve('hello node.js');
+  console.log(hello);
+  await next();
+  console.log('b end');
+}
+
+compose([a, b])({});
+
+// result
+// 1
+// hello node.js
+// 2
+// hello node.js
+// b end
+// a end
+```
+
+簡單地說，等價於以下代碼：
+
+```javascript
+async function a_new(ctx) {
+  console.log(1);
+    const hello = await Promise.resolve('hello node.js');
+    console.log(hello);
+    await b_new(ctx);
+    console.log('a end');
+}
+async function b_new(ctx) {
+  console.log(2);
+  const hello = await Promise.resolve('hello node.js');
+  console.log(hello);
+  console.log('b end');
+}
+
+a_new({});
+```
+
+這樣的中間件連接起來看起來就像一個洋蔥圈。
+
+### Koa.js 插件
+
+這裡來學習如何使用中間件來創建一個自己的中間件
+
+#### 1. 使用中間件
+
+當找到一個想要使用的功能中間件的時候，一定要查看它的 README.md 文檔，因它會告訴你如何使用該中間件。
+
+```shell
+$ mkdir useragent && cd useragent
+$ npm init -y
+$ npm i koa koa-useragent -S
+```
+
+新建 index.js：
+
+```javascript
+const Koa = require('koa');
+
+const app = new Koa();
+
+const userAgent = require('koa-useragent')
+
+app.use(userAgent);
+
+app.use(async (ctx, next) => {
+  console.log(require('util').inspect(ctx.userAgent));
+});
+
+app.listen(3000);
+```
+
+運行服務器：
+
+```shell
+node index.js
+```
+
+打開瀏覽器，結果如下：
+
+```
+{ isAuthoritative: true,
+  isMobile: false,
+  isTablet: false,
+  isiPad: false,
+  isiPod: false,
+  isiPhone: false,
+  isAndroid: false,
+  isBlackberry: false,
+  isOpera: false,
+  isIE: false,
+  isEdge: false,
+  isIECompatibilityMode: false,
+  isSafari: false,
+  isFirefox: false,
+  isWebkit: false,
+  isChrome: true,
+  isKonqueror: false,
+  isOmniWeb: false,
+  isSeaMonkey: false,
+  isFlock: false,
+  isAmaya: false,
+  isPhantomJS: false,
+  isEpiphany: false,
+  isDesktop: true,
+  isWindows: false,
+  isLinux: false,
+  isLinux64: false,
+  isMac: true,
+  isChromeOS: false,
+  isBada: false,
+  isSamsung: false,
+  isRaspberry: false,
+  isBot: false,
+  isCurl: false,
+  isAndroidTablet: false,
+  isWinJs: false,
+  isKindleFire: false,
+  isSilk: false,
+  isCaptive: false,
+  isSmartTV: false,
+  isUC: false,
+  isElectron: false,
+  isFacebook: false,
+  isAlamoFire: false,
+  silkAccelerated: false,
+  browser: 'Chrome',
+  version: '71.0.3578.98',
+  os: 'OS X',
+  platform: 'Apple Mac',
+  geoIp: {},
+  electronVersion: '',
+  source:
+   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/71.0.3578.98 Safari/537.36' }
+```
+
+#### 2. 創建一個中間件
+
+每一個中間件會接收 ctx 和 next 兩個參數，next 是下一個回調的 Promise，而 ctx 是 koa 封裝的上下文，這個對象包含響應和請求的所有方法，當我們想要添加一些方法的時候，可以直接掛載到 ctx 對象上。
+
+現在來創建一個在控制台上輸出當前訪問 URL 的中間件：
+
+```javascript
+// log.js
+
+module.exports = options => {
+  if (!options.format()) {
+    console.error('需要傳遞 format 函數');
+  }
+  return async (ctx, next) => {
+    console.log(options.format(ctx.url));
+    await next();
+  }
+}
+```
+
+```javascript
+const Koa = require('koa');
+const userAgent = require('koa-useragent');
+
+const log = require('./log')
+
+const app = new Koa();
+
+const config = {format: text => `======= ${text} =======`};
+app.use(userAgent);
+app.use(log(config));
+
+app.listen(3000);
+```
+
+通常自定義的中間件需要傳遞配置項，所以開發的中間件插件通常是兩層函數，一層用來傳遞配置項，一層是 Koa.js 中間件。注意一定要調用 next，否則無法調用後續的中間件。
+
+#### 3. 小結
+
+Egg.js 對 Koa.js 進行了封裝，Egg.js 提供了更多好用的 API 與更高擴展性。
+
+## Egg.js 基礎知識
+
+Egg.js 由 Koa.js 擴展而來，添加了多進程支持，並且參考了 Ruby On Rails 的設計哲學，以約定優先的配置。
+
+目錄約定：[https://eggjs.org/zh-cn/basics/structure.html](https://eggjs.org/zh-cn/basics/structure.html)
+
+- app/router.js
+- 
